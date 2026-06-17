@@ -1,5 +1,4 @@
-gradio
-datasets
-sentence-transformers
+flask
+flask-cors
 chromadb
 google-genai
