@@ -1,78 +1,98 @@
 import os
-import gradio as gr
-from datasets import load_dataset
-from sentence_transformers import SentenceTransformer
+import json
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import chromadb
 from google import genai
+from google.genai import types
 
-print("Loading dataset...")
-dataset = load_dataset("heyIamUmair/pakistani-law-family-criminal-property")
-data = dataset["train"]
-queries = list(data["Query"])
-responses = list(data["Response"])
+app = Flask(__name__)
+CORS(app)
 
-print("Loading embedding model...")
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+print("Loading law_data.json...")
+with open("law_data.json", "r") as f:
+    embedded_data = json.load(f)
 
 print("Building vector database...")
 db_client = chromadb.Client()
-collection = db_client.get_or_create_collection(name="pakistan_law")
-
-embeddings = embedder.encode(queries)
-collection.add(
-    documents=responses,
-    embeddings=embeddings.tolist(),
-    metadatas=[{"question": q} for q in queries],
-    ids=[str(i) for i in range(len(queries))]
+collection = db_client.get_or_create_collection(
+    name="pakistan_law",
+    metadata={"hnsw:space": "cosine"}
 )
+
+BATCH_SIZE = 100
+for i in range(0, len(embedded_data), BATCH_SIZE):
+    batch = embedded_data[i:i+BATCH_SIZE]
+    collection.add(
+        documents=[x["response"] for x in batch],
+        embeddings=[x["embedding"] for x in batch],
+        metadatas=[{"question": x["question"]} for x in batch],
+        ids=[x["id"] for x in batch]
+    )
+    print(f"Loaded {min(i+BATCH_SIZE, len(embedded_data))}/{len(embedded_data)}")
+
 print(f"Database ready with {collection.count()} entries.")
 
 api_key = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
 
-def ask_legal_question(question, n_results=3):
-    translation_prompt = f"""Translate the following question to English.
-If it's already in English, just repeat it exactly as-is.
-Only output the translated question, nothing else, no explanation.
+def get_query_embedding(text):
+    result = client.models.embed_content(
+        model="gemini-embedding-001",
+        contents=[text],
+        config=types.EmbedContentConfig(
+            task_type="RETRIEVAL_QUERY",
+            output_dimensionality=256
+        )
+    )
+    return [round(v, 6) for v in result.embeddings[0].values]
 
+@app.route("/ask", methods=["POST"])
+def ask():
+    data = request.get_json()
+    question = data.get("question", "").strip()
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
+
+    translation_prompt = f"""Translate the following question to English.
+If already in English, repeat it exactly.
+Output only the translated question, nothing else.
 Question: {question}"""
-    translation_response = client.models.generate_content(
+
+    translation = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=translation_prompt
     )
-    search_query = translation_response.text.strip()
+    search_query = translation.text.strip()
 
+    query_embedding = get_query_embedding(search_query)
     results = collection.query(
-        query_embeddings=embedder.encode([search_query]).tolist(),
-        n_results=n_results
+        query_embeddings=[query_embedding],
+        n_results=3
     )
-    retrieved_texts = results["documents"][0]
-    context = "\n\n".join(retrieved_texts)
+    context = "\n\n".join(results["documents"][0])
 
     prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
-Answer the user's question using ONLY the legal context provided below.
-Respond in the SAME language and script the user used in their original question.
-If the context doesn't clearly answer the question, say so honestly instead of guessing.
+Answer using ONLY the legal context below.
+Reply in the SAME language the user used: Urdu script → Urdu, Roman Urdu → Roman Urdu, English → English.
+If the context does not answer the question, say so honestly.
 
 Legal context:
 {context}
 
-User's original question: {question}
-
+User question: {question}
 Answer:"""
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt
     )
-    return response.text
+    return jsonify({"answer": response.text})
 
-demo = gr.Interface(
-    fn=ask_legal_question,
-    inputs=gr.Textbox(label="Apna sawal likhein (English, Urdu, ya Roman Urdu mein)"),
-    outputs=gr.Textbox(label="Jawab"),
-    title="Asaan Qanoon",
-    description="Pakistan ke Family, Criminal aur Property Law ke baare mein sawal poochain."
-)
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "entries": collection.count()})
 
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
