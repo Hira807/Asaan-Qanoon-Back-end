@@ -29,7 +29,6 @@ for i in range(0, len(embedded_data), BATCH_SIZE):
         metadatas=[{"question": x["question"]} for x in batch],
         ids=[x["id"] for x in batch]
     )
-    print(f"Loaded {min(i+BATCH_SIZE, len(embedded_data))}/{len(embedded_data)}")
 
 print(f"Database ready with {collection.count()} entries.")
 
@@ -54,25 +53,33 @@ def ask():
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    translation_prompt = f"""Translate the following question to English.
+    try:
+        translation_prompt = f"""Translate the following question to English.
 If already in English, repeat it exactly.
 Output only the translated question, nothing else.
 Question: {question}"""
+        translation = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=translation_prompt
+        )
+        search_query = translation.text.strip()
+    except Exception as e:
+        print(f"Translation error: {e}")
+        search_query = question
 
-    translation = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=translation_prompt
-    )
-    search_query = translation.text.strip()
+    try:
+        query_embedding = get_query_embedding(search_query)
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=3
+        )
+        context = "\n\n".join(results["documents"][0])
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return jsonify({"answer": "Sorry, could not process your question. Please try again."}), 200
 
-    query_embedding = get_query_embedding(search_query)
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=3
-    )
-    context = "\n\n".join(results["documents"][0])
-
-    prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
+    try:
+        prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
 Answer using ONLY the legal context below.
 Reply in the SAME language the user used: Urdu script → Urdu, Roman Urdu → Roman Urdu, English → English.
 If the context does not answer the question, say so honestly.
@@ -82,12 +89,14 @@ Legal context:
 
 User question: {question}
 Answer:"""
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return jsonify({"answer": response.text})
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        return jsonify({"answer": response.text})
+    except Exception as e:
+        print(f"Generation error: {e}")
+        return jsonify({"answer": "Sorry, could not generate answer. Please try again."}), 200
 
 @app.route("/health", methods=["GET"])
 def health():
