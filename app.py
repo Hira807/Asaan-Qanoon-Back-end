@@ -59,7 +59,7 @@ If already in English, repeat it exactly.
 Output only the translated question, nothing else.
 Question: {question}"""
         translation = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=translation_prompt
         )
         search_query = translation.text.strip()
