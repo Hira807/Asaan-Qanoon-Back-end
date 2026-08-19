@@ -43,7 +43,11 @@ groq_key = os.environ.get("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_key)
 
 # Working Groq Model Selection
-MODEL_NAME = "llama3-8b-8192"
+# Purana (Replace this):
+# MODEL_NAME = "llama3-8b-8192"
+
+# Naya (Active Groq Model):
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 def get_query_embedding(text):
     result = gemini_client.models.embed_content(
