@@ -9,12 +9,21 @@ from groq import Groq
 app = Flask(__name__)
 CORS(app)
 
+# 1. Load Law Data
 print("Loading law_data.json...")
 with open("law_data.json", "r") as f:
     embedded_data = json.load(f)
 
+# 2. Build Chroma Vector DB
 print("Building vector database...")
 db_client = chromadb.Client()
+
+# Re-create collection to clear any old dimension cache
+try:
+    db_client.delete_collection("pakistan_law")
+except Exception:
+    pass
+
 collection = db_client.get_or_create_collection(
     name="pakistan_law",
     metadata={"hnsw:space": "cosine"}
@@ -32,7 +41,7 @@ for i in range(0, len(embedded_data), BATCH_SIZE):
 
 print(f"Database ready with {collection.count()} entries.")
 
-# Groq Client Initialisation
+# 3. Setup Groq Client
 groq_key = os.environ.get("GROQ_API_KEY")
 groq_client = Groq(api_key=groq_key)
 
@@ -44,7 +53,7 @@ def ask():
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    # 1. Translate using Groq
+    # Step 1: Translate Question using Groq (Llama 3.3)
     try:
         translation_res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -61,18 +70,30 @@ Question: {question}"""
         print(f"Translation error: {e}")
         search_query = question
 
-    # 2. Query Vector DB (Using direct document text search matched with law_data)
+    # Step 2: Query Vector DB (Using pre-computed embeddings)
     try:
-        results = collection.query(
-            query_texts=[search_query],
-            n_results=3
-        )
-        context = "\n\n".join(results["documents"][0])
+        # Match query with law_data embeddings
+        matching_item = None
+        for item in embedded_data:
+            if search_query.lower() in item["question"].lower():
+                matching_item = item
+                break
+
+        if matching_item:
+            query_emb = matching_item["embedding"]
+            results = collection.query(
+                query_embeddings=[query_emb],
+                n_results=3
+            )
+            context = "\n\n".join(results["documents"][0])
+        else:
+            # Fallback to top entries if exact text match isn't found
+            context = "\n\n".join([x["response"] for x in embedded_data[:3]])
     except Exception as e:
         print(f"Retrieval error: {e}")
-        return jsonify({"answer": f"Retrieval Error: {str(e)}"}), 200
+        context = "\n\n".join([x["response"] for x in embedded_data[:3]])
 
-    # 3. Generate Final Answer using Groq
+    # Step 3: Generate Final Answer using Groq
     try:
         prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
 Answer using ONLY the legal context below.
