@@ -65,9 +65,9 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    anthropic_key = os.environ.get("Claude_API_KEY")
     if not anthropic_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
+        raise ValueError("Claude_API_KEY not set")
     claude_client = Anthropic(api_key=anthropic_key)
     print("[STARTUP] ✅ Claude client initialized")
 except Exception as e:
