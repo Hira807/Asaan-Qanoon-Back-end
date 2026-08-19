@@ -1,5 +1,6 @@
 flask
 flask-cors
 chromadb
-google-genai
-groq
+google-generativeai
+anthropic
+requests
