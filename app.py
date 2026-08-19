@@ -90,7 +90,7 @@ Question: {question}"""
         context = "\n\n".join(results["documents"][0])
     except Exception as e:
         print(f"Embedding error: {e}")
-        return jsonify({"answer": "Sorry, could not process your question. Please try again."}), 200
+        return jsonify({"answer": f"Embedding Error: {str(e)}"}), 200
 
     try:
         # Generate answer using Groq
@@ -113,7 +113,7 @@ Answer:"""
         return jsonify({"answer": answer_response.choices[0].message.content})
     except Exception as e:
         print(f"Generation error: {e}")
-        return jsonify({"answer": "Sorry, could not generate answer. Please try again."}), 200
+        return jsonify({"answer": f"Generation Error: {str(e)}"}), 200
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -122,7 +122,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-except Exception as e:
-        print(f"Generation error: {e}")
-        # Generic message ki bajaye real error message frontend par return karein
-        return jsonify({"answer": f"Backend Error: {str(e)}"}), 200
