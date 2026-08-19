@@ -8,9 +8,7 @@ from groq import Groq
 app = Flask(__name__)
 CORS(app)
 
-# Official Groq Model Name
-# Updated active model ID for Groq
-MODEL_NAME = "llama3-8b-8192"
+MODEL_NAME = "mixtral-8x7b-32768"
 
 # 1. Load Law Data
 print("Loading law_data.json...")
