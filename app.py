@@ -9,7 +9,8 @@ app = Flask(__name__)
 CORS(app)
 
 # Official Groq Model Name
-MODEL_NAME = "llama-3.1-8b-instant"
+# Updated active model ID for Groq
+MODEL_NAME = "llama3-8b-8192"
 
 # 1. Load Law Data
 print("Loading law_data.json...")
