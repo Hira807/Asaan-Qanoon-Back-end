@@ -6,7 +6,6 @@ from flask_cors import CORS
 import chromadb
 from google import genai
 from google.genai import types
-from groq import Groq
 
 app = Flask(__name__)
 CORS(app)
@@ -34,20 +33,9 @@ for i in range(0, len(embedded_data), BATCH_SIZE):
 
 print(f"Database ready with {collection.count()} entries.")
 
-# Gemini for embeddings only
+# Single Gemini Client for Embeddings + Text Generation
 gemini_key = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=gemini_key)
-
-# Groq for text generation
-groq_key = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_key)
-
-# Working Groq Model Selection
-# Purana (Replace this):
-# MODEL_NAME = "llama3-8b-8192"
-
-# Naya (Active Groq Model):
-MODEL_NAME = "llama-3.3-70b-versatile"
 
 def get_query_embedding(text):
     result = gemini_client.models.embed_content(
@@ -68,23 +56,21 @@ def ask():
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
+    # 1. Translate using Gemini
     try:
-        # Translate using Groq
-        translation_response = groq_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{
-                "role": "user",
-                "content": f"""Translate the following question to English.
+        translation_response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"""Translate the following question to English.
 If already in English, repeat it exactly.
 Output only the translated question, nothing else.
 Question: {question}"""
-            }]
         )
-        search_query = translation_response.choices[0].message.content.strip()
+        search_query = translation_response.text.strip()
     except Exception as e:
         print(f"Translation error: {e}")
         search_query = question
 
+    # 2. Query Vector DB
     try:
         query_embedding = get_query_embedding(search_query)
         results = collection.query(
@@ -96,13 +82,9 @@ Question: {question}"""
         print(f"Embedding error: {e}")
         return jsonify({"answer": f"Embedding Error: {str(e)}"}), 200
 
+    # 3. Generate Final Answer using Gemini
     try:
-        # Generate answer using Groq
-        answer_response = groq_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{
-                "role": "user",
-                "content": f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
+        prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
 Answer using ONLY the legal context below.
 Reply in the SAME language the user used: Urdu script → Urdu, Roman Urdu → Roman Urdu, English → English.
 If the context does not answer the question, say so honestly.
@@ -112,9 +94,12 @@ Legal context:
 
 User question: {question}
 Answer:"""
-            }]
+
+        answer_response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
         )
-        return jsonify({"answer": answer_response.choices[0].message.content})
+        return jsonify({"answer": answer_response.text})
     except Exception as e:
         print(f"Generation error: {e}")
         return jsonify({"answer": f"Generation Error: {str(e)}"}), 200
