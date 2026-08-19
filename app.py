@@ -6,7 +6,7 @@ from flask_cors import CORS
 import chromadb
 from google import genai
 from google.genai import types
-from groq import Groq
+from anthropic import Anthropic
 from threading import Thread
 import requests
 import time
@@ -65,13 +65,13 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        raise ValueError("GROQ_API_KEY not set")
-    groq_client = Groq(api_key=groq_key)
-    print("[STARTUP] ✅ Groq client initialized")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+    claude_client = Anthropic(api_key=anthropic_key)
+    print("[STARTUP] ✅ Claude client initialized")
 except Exception as e:
-    print(f"[STARTUP] ❌ Groq error: {e}")
+    print(f"[STARTUP] ❌ Claude error: {e}")
     sys.exit(1)
 
 print("\n" + "="*60)
@@ -125,8 +125,9 @@ def ask():
     # Step 1: Translate to English
     try:
         print("[STEP 1] Translating to English...")
-        translation_response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        translation_response = claude_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=200,
             messages=[{
                 "role": "user",
                 "content": f"""Translate this to English.
@@ -134,10 +135,9 @@ If already English, repeat exactly.
 Output ONLY the translated text, nothing else.
 
 Question: {question}"""
-            }],
-            timeout=10
+            }]
         )
-        search_query = translation_response.choices[0].message.content.strip()
+        search_query = translation_response.content[0].text.strip()
         print(f"[STEP 1] ✅ Translated: {search_query}")
         
     except Exception as e:
@@ -166,11 +166,12 @@ Question: {question}"""
             "answer": "معاف کریں، آپ کے سوال کو سمجھنے میں مسئلہ ہو رہا ہے۔ براہ کرم دوبارہ کوشش کریں۔\n\nSorry, could not process your question. Please try again."
         }), 200
 
-    # Step 3: Generate answer
+    # Step 3: Generate answer using Claude
     try:
-        print("[STEP 3] Generating answer with Groq...")
-        answer_response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        print("[STEP 3] Generating answer with Claude...")
+        answer_response = claude_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1000,
             messages=[{
                 "role": "user",
                 "content": f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, Property).
@@ -188,11 +189,10 @@ LEGAL CONTEXT:
 USER QUESTION: {question}
 
 ANSWER:"""
-            }],
-            timeout=20
+            }]
         )
         
-        answer = answer_response.choices[0].message.content.strip()
+        answer = answer_response.content[0].text.strip()
         print(f"[STEP 3] ✅ Answer generated ({len(answer)} chars)")
         print(f"{'='*60}\n")
         
@@ -201,7 +201,7 @@ ANSWER:"""
     except Exception as e:
         print(f"[STEP 3] ❌ Generation error: {e}")
         return jsonify({
-            "answer": "معاف کریں، جواب تیار نہیں ہو سکے۔ براہ کرم دوبارہ کوشش کریں۔\n\nSorry, could not generate answer. Please try again."
+            "answer": "معاف کریں، جواب تیار نہیں . براہ کرم دوبارہ کوشش کریں۔\n\nSorry, could not generate answer. Please try again."
         }), 200
 
 @app.route("/health", methods=["GET"])
