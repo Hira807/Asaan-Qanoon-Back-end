@@ -4,8 +4,7 @@ import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chromadb
-from google import genai
-from google.genai import types
+from groq import Groq
 
 app = Flask(__name__)
 CORS(app)
@@ -33,20 +32,9 @@ for i in range(0, len(embedded_data), BATCH_SIZE):
 
 print(f"Database ready with {collection.count()} entries.")
 
-# Single Gemini Client for Embeddings + Text Generation
-gemini_key = os.environ.get("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=gemini_key)
-
-def get_query_embedding(text):
-    result = gemini_client.models.embed_content(
-        model="gemini-embedding-001",
-        contents=[text],
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=256
-        )
-    )
-    return [round(v, 6) for v in result.embeddings[0].values]
+# Groq Client Initialisation
+groq_key = os.environ.get("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_key)
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -56,33 +44,35 @@ def ask():
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    # 1. Translate using Gemini (Shifted to gemini-1.5-flash)
+    # 1. Translate using Groq
     try:
-        translation_response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=f"""Translate the following question to English.
+        translation_res = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{
+                "role": "user",
+                "content": f"""Translate the following question to English.
 If already in English, repeat it exactly.
 Output only the translated question, nothing else.
 Question: {question}"""
+            }]
         )
-        search_query = translation_response.text.strip()
+        search_query = translation_res.choices[0].message.content.strip()
     except Exception as e:
         print(f"Translation error: {e}")
         search_query = question
 
-    # 2. Query Vector DB
+    # 2. Query Vector DB (Using direct document text search matched with law_data)
     try:
-        query_embedding = get_query_embedding(search_query)
         results = collection.query(
-            query_embeddings=[query_embedding],
+            query_texts=[search_query],
             n_results=3
         )
         context = "\n\n".join(results["documents"][0])
     except Exception as e:
-        print(f"Embedding error: {e}")
-        return jsonify({"answer": f"Embedding Error: {str(e)}"}), 200
+        print(f"Retrieval error: {e}")
+        return jsonify({"answer": f"Retrieval Error: {str(e)}"}), 200
 
-    # 3. Generate Final Answer using Gemini (Shifted to gemini-1.5-flash)
+    # 3. Generate Final Answer using Groq
     try:
         prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
 Answer using ONLY the legal context below.
@@ -95,11 +85,11 @@ Legal context:
 User question: {question}
 Answer:"""
 
-        answer_response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
+        answer_res = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}]
         )
-        return jsonify({"answer": answer_response.text})
+        return jsonify({"answer": answer_res.choices[0].message.content.strip()})
     except Exception as e:
         print(f"Generation error: {e}")
         return jsonify({"answer": f"Generation Error: {str(e)}"}), 200
