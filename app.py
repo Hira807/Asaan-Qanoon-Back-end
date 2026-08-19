@@ -122,3 +122,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+except Exception as e:
+        print(f"Generation error: {e}")
+        # Generic message ki bajaye real error message frontend par return karein
+        return jsonify({"answer": f"Backend Error: {str(e)}"}), 200
