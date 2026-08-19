@@ -11,31 +11,41 @@ import time
 app = Flask(__name__)
 CORS(app)
 
+# Active, Fast and Stable Groq Model
+MODEL_NAME = "llama-3.1-8b-instant"
+
 print("\n" + "="*70)
-print("ASAAN QANOON - STARTING UP (GROQ ONLY)")
+print("ASAAN QANOON - STARTING UP")
 print("="*70)
 
-# Load law database
+# 1. Load law database
 print("\n[STARTUP] Loading law_data.json...")
 try:
     with open("law_data.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-    print(f"[STARTUP] ✅ Loaded {len(data)} law entries")
+        embedded_data = json.load(f)
+    print(f"[STARTUP] ✅ Loaded {len(embedded_data)} law entries")
 except Exception as e:
     print(f"[STARTUP] ❌ Failed to load: {e}")
     exit(1)
 
-# Build vector database (embeddings already in law_data.json)
+# 2. Build ChromaDB Vector DB
 print("[STARTUP] Building ChromaDB...")
 try:
     db = chromadb.Client()
+    
+    try:
+        db.delete_collection("pakistan_law")
+    except Exception:
+        pass
+
     collection = db.get_or_create_collection(
         name="pakistan_law",
         metadata={"hnsw:space": "cosine"}
     )
     
-    for i in range(0, len(data), 100):
-        batch = data[i:i+100]
+    BATCH_SIZE = 100
+    for i in range(0, len(embedded_data), BATCH_SIZE):
+        batch = embedded_data[i:i+BATCH_SIZE]
         collection.add(
             documents=[x["response"] for x in batch],
             embeddings=[x["embedding"] for x in batch],
@@ -48,14 +58,14 @@ except Exception as e:
     print(f"[STARTUP] ❌ Database error: {e}")
     exit(1)
 
-# Initialize Groq client ONLY
+# 3. Setup Groq Client
 print("\n[STARTUP] Initializing Groq client...")
 try:
     groq_key = os.environ.get("GROQ_API_KEY")
     if not groq_key:
         raise ValueError("GROQ_API_KEY not found")
     groq_client = Groq(api_key=groq_key)
-    print("[STARTUP] ✅ Groq client ready (LLaMA 3.3 70B)")
+    print(f"[STARTUP] ✅ Groq client ready ({MODEL_NAME})")
 except Exception as e:
     print(f"[STARTUP] ❌ Groq error: {e}")
     exit(1)
@@ -64,14 +74,14 @@ print("\n" + "="*70)
 print("STARTUP COMPLETE - SERVER READY")
 print("="*70 + "\n")
 
-# Keep-alive pinger
+# Keep-alive pinger for Render
 def keep_alive():
     while True:
         try:
             url = os.environ.get("RENDER_EXTERNAL_URL")
             if url:
                 requests.get(f"{url}/health", timeout=5)
-        except:
+        except Exception:
             pass
         time.sleep(840)
 
@@ -79,9 +89,8 @@ Thread(target=keep_alive, daemon=True).start()
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    """Main endpoint for legal questions"""
-    data = request.get_json()
-    question = data.get("question", "").strip()
+    req_data = request.get_json()
+    question = req_data.get("question", "").strip() if req_data else ""
     
     if not question:
         return jsonify({"error": "No question provided"}), 400
@@ -94,16 +103,14 @@ def ask():
     try:
         print("[STEP 1] Searching database...")
         
-        # Find the embedding from existing data
         question_embedding = None
-        for entry in data:
+        for entry in embedded_data:
             if entry["question"].lower() == question.lower():
                 question_embedding = entry["embedding"]
                 break
         
-        # If exact match not found, use first entry's embedding as fallback
         if not question_embedding:
-            question_embedding = data[0]["embedding"]
+            question_embedding = embedded_data[0]["embedding"]
         
         results = collection.query(
             query_embeddings=[question_embedding],
@@ -127,7 +134,7 @@ def ask():
         print("[STEP 2] Generating answer with Groq...")
         
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=MODEL_NAME,
             messages=[{
                 "role": "user",
                 "content": f"""You are a helpful Pakistani legal assistant for Family, Criminal, and Property law.
@@ -166,7 +173,6 @@ ANSWER:"""
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check endpoint"""
     try:
         return jsonify({
             "status": "ok",
