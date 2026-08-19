@@ -4,124 +4,179 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import chromadb
 from groq import Groq
+from threading import Thread
+import requests
+import time
 
 app = Flask(__name__)
 CORS(app)
 
-MODEL_NAME = "mixtral-8x7b-32768"
+print("\n" + "="*70)
+print("ASAAN QANOON - STARTING UP (GROQ ONLY)")
+print("="*70)
 
-# 1. Load Law Data
-print("Loading law_data.json...")
-with open("law_data.json", "r") as f:
-    embedded_data = json.load(f)
-
-# 2. Build Chroma Vector DB
-print("Building vector database...")
-db_client = chromadb.Client()
-
+# Load law database
+print("\n[STARTUP] Loading law_data.json...")
 try:
-    db_client.delete_collection("pakistan_law")
-except Exception:
-    pass
+    with open("law_data.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+    print(f"[STARTUP] ✅ Loaded {len(data)} law entries")
+except Exception as e:
+    print(f"[STARTUP] ❌ Failed to load: {e}")
+    exit(1)
 
-collection = db_client.get_or_create_collection(
-    name="pakistan_law",
-    metadata={"hnsw:space": "cosine"}
-)
-
-BATCH_SIZE = 100
-for i in range(0, len(embedded_data), BATCH_SIZE):
-    batch = embedded_data[i:i+BATCH_SIZE]
-    collection.add(
-        documents=[x["response"] for x in batch],
-        embeddings=[x["embedding"] for x in batch],
-        metadatas=[{"question": x["question"]} for x in batch],
-        ids=[x["id"] for x in batch]
+# Build vector database (embeddings already in law_data.json)
+print("[STARTUP] Building ChromaDB...")
+try:
+    db = chromadb.Client()
+    collection = db.get_or_create_collection(
+        name="pakistan_law",
+        metadata={"hnsw:space": "cosine"}
     )
+    
+    for i in range(0, len(data), 100):
+        batch = data[i:i+100]
+        collection.add(
+            documents=[x["response"] for x in batch],
+            embeddings=[x["embedding"] for x in batch],
+            metadatas=[{"question": x["question"]} for x in batch],
+            ids=[x["id"] for x in batch]
+        )
+    
+    print(f"[STARTUP] ✅ Database ready: {collection.count()} entries")
+except Exception as e:
+    print(f"[STARTUP] ❌ Database error: {e}")
+    exit(1)
 
-print(f"Database ready with {collection.count()} entries.")
+# Initialize Groq client ONLY
+print("\n[STARTUP] Initializing Groq client...")
+try:
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY not found")
+    groq_client = Groq(api_key=groq_key)
+    print("[STARTUP] ✅ Groq client ready (LLaMA 3.3 70B)")
+except Exception as e:
+    print(f"[STARTUP] ❌ Groq error: {e}")
+    exit(1)
 
-# 3. Setup Groq Client
-groq_key = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_key)
+print("\n" + "="*70)
+print("STARTUP COMPLETE - SERVER READY")
+print("="*70 + "\n")
+
+# Keep-alive pinger
+def keep_alive():
+    while True:
+        try:
+            url = os.environ.get("RENDER_EXTERNAL_URL")
+            if url:
+                requests.get(f"{url}/health", timeout=5)
+        except:
+            pass
+        time.sleep(840)
+
+Thread(target=keep_alive, daemon=True).start()
 
 @app.route("/ask", methods=["POST"])
 def ask():
+    """Main endpoint for legal questions"""
     data = request.get_json()
     question = data.get("question", "").strip()
-
+    
     if not question:
         return jsonify({"error": "No question provided"}), 400
-
-    # Step 1: Translate Question using Groq
+    
+    print(f"\n{'='*70}")
+    print(f"[QUERY] Question: {question}")
+    print(f"{'='*70}")
+    
+    # Step 1: Search database using pre-computed embeddings
     try:
-        translation_res = groq_client.chat.completions.create(
-            model=MODEL_NAME,
+        print("[STEP 1] Searching database...")
+        
+        # Find the embedding from existing data
+        question_embedding = None
+        for entry in data:
+            if entry["question"].lower() == question.lower():
+                question_embedding = entry["embedding"]
+                break
+        
+        # If exact match not found, use first entry's embedding as fallback
+        if not question_embedding:
+            question_embedding = data[0]["embedding"]
+        
+        results = collection.query(
+            query_embeddings=[question_embedding],
+            n_results=3
+        )
+        
+        if not results["documents"] or not results["documents"][0]:
+            raise ValueError("No matching laws found")
+        
+        context = "\n\n".join(results["documents"][0])
+        print(f"[STEP 1] ✅ Found {len(results['documents'][0])} relevant entries")
+        
+    except Exception as e:
+        print(f"[ERROR] Database error: {e}")
+        return jsonify({
+            "answer": "معاف کریں، سوال سمجھ نہیں آیا۔ براہ کرم دوبارہ کوشش کریں۔"
+        }), 200
+    
+    # Step 2: Generate answer with Groq
+    try:
+        print("[STEP 2] Generating answer with Groq...")
+        
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
             messages=[{
                 "role": "user",
-                "content": f"""Translate the following question to English.
-If already in English, repeat it exactly.
-Output ONLY the translated text without extra explanation or quotes.
+                "content": f"""You are a helpful Pakistani legal assistant for Family, Criminal, and Property law.
 
-Question: {question}"""
-            }]
-        )
-        search_query = translation_res.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Translation error: {e}")
-        search_query = question
+IMPORTANT RULES:
+1. Answer in the SAME language as the user
+   - Urdu script → Answer in Urdu
+   - Roman Urdu → Answer in Roman Urdu
+   - English → Answer in English
+2. Use ONLY the legal context below
+3. Be clear, practical, and concise
+4. Keep answer 200-400 words
 
-    # Step 2: Query Vector DB
-    try:
-        matching_item = None
-        for item in embedded_data:
-            if search_query.lower() in item["question"].lower():
-                matching_item = item
-                break
-
-        if matching_item:
-            query_emb = matching_item["embedding"]
-            results = collection.query(
-                query_embeddings=[query_emb],
-                n_results=3
-            )
-            context = "\n\n".join(results["documents"][0])
-        else:
-            context = "\n\n".join([x["response"] for x in embedded_data[:3]])
-    except Exception as e:
-        print(f"Retrieval error: {e}")
-        context = "\n\n".join([x["response"] for x in embedded_data[:3]])
-
-    # Step 3: Generate Final Answer using Groq
-    try:
-        prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
-Answer using ONLY the legal context below.
-Reply in the EXACT SAME language the user used:
-- Urdu script -> Urdu script
-- Roman Urdu -> Roman Urdu
-- English -> English
-
-If the context does not answer the question, say so honestly.
-
-Legal context:
+LEGAL CONTEXT:
 {context}
 
-User question: {question}
-Answer:"""
+USER QUESTION: {question}
 
-        answer_res = groq_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}]
+ANSWER:"""
+            }],
+            temperature=0.7,
+            max_tokens=1000
         )
-        return jsonify({"answer": answer_res.choices[0].message.content.strip()})
+        
+        answer = response.choices[0].message.content
+        print(f"[STEP 2] ✅ Answer generated ({len(answer)} chars)")
+        print(f"{'='*70}\n")
+        
+        return jsonify({"answer": answer}), 200
+    
     except Exception as e:
-        print(f"Generation error: {e}")
-        return jsonify({"answer": f"Generation Error: {str(e)}"}), 200
+        print(f"[ERROR] Groq generation error: {e}")
+        return jsonify({
+            "answer": "معاف کریں، جواب تیار نہیں ہو سکے۔ براہ کرم دوبارہ کوشش کریں۔"
+        }), 200
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "entries": collection.count()})
+    """Health check endpoint"""
+    try:
+        return jsonify({
+            "status": "ok",
+            "entries": collection.count(),
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    print(f"🚀 Starting Asaan Qanoon API on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=False)
