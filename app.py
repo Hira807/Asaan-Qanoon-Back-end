@@ -56,10 +56,10 @@ def ask():
     if not question:
         return jsonify({"error": "No question provided"}), 400
 
-    # 1. Translate using Gemini
+    # 1. Translate using Gemini (Shifted to gemini-1.5-flash)
     try:
         translation_response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=f"""Translate the following question to English.
 If already in English, repeat it exactly.
 Output only the translated question, nothing else.
@@ -82,7 +82,7 @@ Question: {question}"""
         print(f"Embedding error: {e}")
         return jsonify({"answer": f"Embedding Error: {str(e)}"}), 200
 
-    # 3. Generate Final Answer using Gemini
+    # 3. Generate Final Answer using Gemini (Shifted to gemini-1.5-flash)
     try:
         prompt = f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
 Answer using ONLY the legal context below.
@@ -96,7 +96,7 @@ User question: {question}
 Answer:"""
 
         answer_response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=prompt
         )
         return jsonify({"answer": answer_response.text})
