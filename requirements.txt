@@ -2,4 +2,4 @@ flask
 flask-cors
 chromadb
 google-genai
-groq
+
