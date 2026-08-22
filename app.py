@@ -57,7 +57,7 @@ def ask():
 
     try:
         translation_response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=f"""Translate the following question to English.
 If already in English, repeat it exactly.
 Output only the translated question, nothing else.
@@ -92,7 +92,7 @@ User question: {question}
 Answer:"""
 
         answer_response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=prompt
         )
         return jsonify({"answer": answer_response.text})
