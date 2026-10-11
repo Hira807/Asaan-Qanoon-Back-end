@@ -15,8 +15,9 @@ with open("law_data.json", "r", encoding="utf-8") as f:
 
 print("Building vector database...")
 db_client = chromadb.Client()
+# Collection name change karne se purana mismatch khatam ho jayega
 collection = db_client.get_or_create_collection(
-    name="pakistan_law",
+    name="pakistan_law_v2",
     metadata={"hnsw:space": "cosine"}
 )
 
@@ -48,7 +49,7 @@ def ask():
     try:
         # Translate or normalize query using Groq
         translation_response = groq_client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.3-70b-versatile",
             messages=[{
                 "role": "user",
                 "content": f"""Translate the following question to English if it is in Urdu or Roman Urdu.
@@ -78,7 +79,7 @@ Question: {question}"""
     try:
         # Generate answer using Groq Llama 3.3 70B
         answer_response = groq_client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.3-70b-versatile",
             messages=[{
                 "role": "user",
                 "content": f"""You are a helpful legal assistant for Pakistani law (Family, Criminal, and Property law).
@@ -138,7 +139,7 @@ def islamic_lite():
 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.1-70b-versatile",
+            model="llama-3.3-70b-versatile",
             temperature=0.1,
             max_tokens=400,
             messages=[
