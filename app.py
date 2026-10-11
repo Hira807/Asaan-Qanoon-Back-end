@@ -20,7 +20,6 @@ collection = db_client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"}
 )
 
-# Safe document loading without strict dimension embedding mismatch
 BATCH_SIZE = 100
 for i in range(0, len(embedded_data), BATCH_SIZE):
     batch = embedded_data[i:i+BATCH_SIZE]
@@ -47,7 +46,6 @@ def ask():
         return jsonify({"error": "No question provided"}), 400
 
     try:
-        # Query ChromaDB using text search directly
         results = collection.query(
             query_texts=[question],
             n_results=3
@@ -59,7 +57,6 @@ def ask():
         context = "General Pakistani legal framework."
 
     try:
-        # Generate answer using Groq Llama 3.3 70B
         answer_response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{
@@ -111,7 +108,7 @@ def islamic_lite():
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
     if not question:
-        return jsonify({"error": "No question provided"}}, 400
+        return jsonify({"error": "No question provided"}), 400
 
     try:
         response = groq_client.chat.completions.create(
