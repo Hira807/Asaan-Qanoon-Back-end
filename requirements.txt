@@ -1,5 +1,4 @@
-   flask
-   flask-cors
-   chromadb
-   groq
-   gunicorn
+flask
+flask-cors
+groq
+gunicorn
