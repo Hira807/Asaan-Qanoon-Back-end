@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from groq import Groq
+from groq import Groq, RateLimitError
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("asaan-qanoon")
@@ -19,14 +19,20 @@ app = Flask(__name__)
 _origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 CORS(app, origins=_origins)
 
-MODEL = "llama-3.3-70b-versatile"
-REWRITE_MODEL = "llama-3.1-8b-instant"
+# Groq ne llama-3.3-70b-versatile aur llama-3.1-8b-instant 16 Aug 2026 ko band kar diye.
+# Har model ki free limit alag hoti hai, isliye ek model limit hit kare to agla try hota hai.
+# Render Environment mein GROQ_MODELS (comma-separated) se list badli ja sakti hai.
+MODELS = [m.strip() for m in os.environ.get(
+    "GROQ_MODELS", "openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.6-27b"
+).split(",") if m.strip()]
+REWRITE_MODEL = os.environ.get("GROQ_REWRITE_MODEL", "openai/gpt-oss-20b")
+
 MAX_QUESTION_CHARS = 1000
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.environ.get("LAW_DATA_FILE", "law_data.json")
 
 groq_key = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_key) if groq_key else None
+groq_client = Groq(api_key=groq_key, timeout=40, max_retries=0) if groq_key else None
 if not groq_client:
     log.error("GROQ_API_KEY is not set. /ask and /api/islamic-lite will return 503.")
 
@@ -107,6 +113,56 @@ def load_laws():
 load_laws()
 
 
+
+# ---------------------------------------------------------------------
+# Groq helper: model fallback + cache (exhibition ke liye free-tier limits bachane ko)
+# ---------------------------------------------------------------------
+THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+CACHE = {}
+CACHE_MAX = 500
+
+
+def cache_key(route, question):
+    q = re.sub(r"[^\w\s]", " ", question.lower(), flags=re.UNICODE)
+    return route + "|" + " ".join(q.split())
+
+
+def cache_put(key, value):
+    if len(CACHE) >= CACHE_MAX:
+        CACHE.pop(next(iter(CACHE)))
+    CACHE[key] = value
+
+
+def chat(messages, max_tokens, temperature):
+    """Models ko ek ek karke try karta hai. Sab rate-limited hon to RateLimitError raise karta hai."""
+    last_err = None
+    rate_limited = False
+    for model in MODELS:
+        try:
+            kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
+            if "gpt-oss" in model:
+                kwargs["extra_body"] = {"reasoning_effort": "low"}
+            r = groq_client.chat.completions.create(**kwargs)
+            text = THINK_RE.sub("", r.choices[0].message.content or "").strip()
+            if text:
+                return text
+            log.warning("Empty answer from %s, trying next model", model)
+        except RateLimitError as e:
+            rate_limited = True
+            last_err = e
+            log.warning("Rate limit on %s, trying next model", model)
+        except Exception as e:
+            last_err = e
+            log.warning("Model %s failed: %s", model, e)
+    if rate_limited:
+        raise RateLimitError("All models are rate limited", response=getattr(last_err, "response", None), body=None)
+    raise last_err or RuntimeError("No model could answer")
+
+
+def busy_response():
+    return jsonify({"error": "Server is busy right now. Please wait a minute and try again."}), 429
+
+
 def rewrite_query(question):
     """Roman Urdu / Urdu sawal ko English search keywords mein badalta hai (agar fail ho to '' )."""
     if not groq_client:
@@ -115,13 +171,14 @@ def rewrite_query(question):
         r = groq_client.chat.completions.create(
             model=REWRITE_MODEL,
             temperature=0,
-            max_tokens=40,
+            max_tokens=300,
+            extra_body={"reasoning_effort": "low"} if "gpt-oss" in REWRITE_MODEL else {},
             messages=[
                 {"role": "system", "content": "Convert the user's legal question (Urdu, Roman Urdu or English) into 5-8 English search keywords about Pakistani law. Output only the keywords, nothing else."},
                 {"role": "user", "content": question},
             ],
         )
-        return r.choices[0].message.content.strip()
+        return (r.choices[0].message.content or "").strip()
     except Exception as e:
         log.warning("Query rewrite failed: %s", e)
         return ""
@@ -167,6 +224,10 @@ def ask():
     if INDEX is None:
         return jsonify({"error": "Law database failed to load."}), 503
 
+    key = cache_key("ask", question)
+    if key in CACHE:
+        return jsonify({"answer": CACHE[key], "cached": True})
+
     try:
         hits = retrieve(question, k=3)
     except Exception as e:
@@ -174,21 +235,24 @@ def ask():
         hits = []
 
     if hits:
-        context = "\n\n".join(f"Q: {h['question']}\nA: {h['response'][:1500]}" for h in hits)
+        context = "\n\n".join(f"Q: {h['question']}\nA: {h['response'][:800]}" for h in hits)
     else:
         context = "NO RELEVANT LEGAL CONTEXT WAS FOUND for this question."
 
     try:
-        resp = groq_client.chat.completions.create(
-            model=MODEL,
-            temperature=0.2,
-            max_tokens=800,
-            messages=[
+        answer = chat(
+            [
                 {"role": "system", "content": LAW_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Legal context:\n{context}\n\nUser question: {question}"},
             ],
+            max_tokens=900,
+            temperature=0.2,
         )
-        return jsonify({"answer": resp.choices[0].message.content})
+        if hits:  # sirf achhe (context-based) jawab cache karo
+            cache_put(key, answer)
+        return jsonify({"answer": answer})
+    except RateLimitError:
+        return busy_response()
     except Exception as e:
         log.exception("Generation error: %s", e)
         return jsonify({"error": "Could not generate an answer. Please try again."}), 502
@@ -232,17 +296,23 @@ def islamic_lite():
     if not groq_client:
         return jsonify({"error": "Server is not configured (missing API key)."}), 503
 
+    key = cache_key("islamic", question)
+    if key in CACHE:
+        return jsonify({"answer": CACHE[key], "cached": True})
+
     try:
-        resp = groq_client.chat.completions.create(
-            model=MODEL,
-            temperature=0.1,
-            max_tokens=400,
-            messages=[
+        answer = chat(
+            [
                 {"role": "system", "content": ISLAMIC_SYSTEM_PROMPT},
                 {"role": "user", "content": question},
             ],
+            max_tokens=700,
+            temperature=0.1,
         )
-        return jsonify({"answer": resp.choices[0].message.content})
+        cache_put(key, answer)
+        return jsonify({"answer": answer})
+    except RateLimitError:
+        return busy_response()
     except Exception as e:
         log.exception("Islamic demo error: %s", e)
         return jsonify({"error": "Could not generate an answer. Please try again."}), 502
@@ -254,6 +324,8 @@ def health():
         "status": "ok" if INDEX is not None else "error",
         "entries": len(LAWS),
         "groq_configured": groq_client is not None,
+        "models": MODELS,
+        "cached_answers": len(CACHE),
         "load_error": LOAD_ERROR,
     })
 
