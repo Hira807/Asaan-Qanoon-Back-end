@@ -1,5 +1,5 @@
-flask
-flask-cors
-chromadb
-groq
-gunicorn
+   flask
+   flask-cors
+   chromadb
+   groq
+   gunicorn
